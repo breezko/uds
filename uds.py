@@ -28,6 +28,8 @@ import re
 import json
 import hashlib
 from tqdm import tqdm
+import threading
+import queue
 
 import Encoder
 
@@ -48,6 +50,7 @@ CHUNK_READ_LENGTH_BYTES = 750000
 class UDS():
     def __init__(self):
         self.api = GoogleAPI()
+        
 
     def delete_file(self, id, name=None, mode_=None):
         """Deletes a given file
@@ -158,7 +161,8 @@ class UDS():
                                          mimetype='text/plain')
 
         self.api.upload_single_file(mediaio_file, file_metadata)
-
+        self.progress_bar_chunks.update(1)
+        self.progress_bar_speed.update(len(chunk_bytes))
         return len(chunk_bytes)
 
     def do_chunked_upload(self, path):
@@ -190,16 +194,31 @@ class UDS():
 
         total = 0
         total_chunks = len(chunk_list)
-        progress_bar_chunks = tqdm(total=total_chunks,
+        self.progress_bar_chunks = tqdm(total=total_chunks,
                             unit='chunks', dynamic_ncols=True,position=0)
-        progress_bar_speed = tqdm(total=total_chunks* CHUNK_READ_LENGTH_BYTES,unit_scale=1,
+        self.progress_bar_speed = tqdm(total=total_chunks* CHUNK_READ_LENGTH_BYTES,unit_scale=1,
                             unit='B', dynamic_ncols=True,position=1)                    
         
+        print(self.progress_bar_speed)
+        chunk_queue = queue.Queue()
+        num_workers = 4
+        threads = list()
         for chunk in chunk_list:
-            total += 1
-            self.upload_chunked_part(chunk)
-            progress_bar_speed.update(CHUNK_READ_LENGTH_BYTES)
-            progress_bar_chunks.update(1)
+            chunk_queue.put(chunk)
+        
+        total += 1
+        
+        for i in range(num_workers):
+            t = StatusChecker(chunk_queue,self)
+            threads.append(t)
+            print('Starting worker {}'.format(i))
+            t.start()
+
+        # wait for the queue to empty
+        chunk_queue.join()
+        #self.upload_chunked_part(chunk)
+
+        
         """# Concurrently execute chunk upload and report back when done.
         with concurrent.futures.ProcessPoolExecutor(max_workers=MAX_WORKERS_ALLOWED) as executor:
             for file in executor.map(ext_upload_chunked_part, chunk_list):
@@ -537,6 +556,41 @@ def ext_upload_chunked_part(chunk):
 
     return len(chunk_bytes)
 
+
+
+class StatusChecker(threading.Thread):
+    global PROCESSED, COUNT
+    """
+    The thread that will check HTTP statuses.
+    """
+
+    #: The queue of urls
+    url_queue = None
+
+    #: The status code of the check url
+    status_code = None
+
+    def __init__(self, url_queue, uds):
+        super().__init__()
+        self.url_queue = url_queue
+        self._return = None
+        self.uds = uds
+
+    def run(self):
+        while True:
+            try:
+                # this will throw queue.Empty immediately if there's
+                # no tasks left
+                to_check = self.url_queue.get_nowait()
+            except queue.Empty:
+                break # empty queue, we're done!
+            else:     
+                self.uds.upload_chunked_part(to_check)
+                self.url_queue.task_done() # tell the queue we're done
+
+    def join(self):
+        threading.Thread.join(self)
+        return self._return
 
 if __name__ == '__main__':
     if (sys.version_info[0] < 3):

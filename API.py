@@ -123,7 +123,7 @@ class GoogleAPI():
 
         Args:
             query (str): Search for this query
-        
+
         Returns:
             list: containing files matching the search
         """
@@ -188,7 +188,7 @@ class GoogleAPI():
 
     def delete_file(self, id):
         """Delete a UDS file
-        
+
         Attempts to delete a file at a given ID.
 
         Args:
@@ -234,6 +234,9 @@ class GoogleAPI():
                 print("Failed to upload chunk %s. Retrying... " %
                       file_metadata.get("properties").get("part"))
                 time.sleep(1)
+                continue
+            except Exception as ex:
+                print("Some other exception %s" % ex)
                 continue
 
         return file, file_metadata

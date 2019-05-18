@@ -1,39 +1,23 @@
 # -*- coding: utf-8 -*-
-from __future__ import print_function
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
 from googleapiclient.http import MediaIoBaseUpload
 from googleapiclient.http import MediaIoBaseDownload
-from httplib2 import Http
-from oauth2client import file, client, tools
 from mimetypes import MimeTypes
 from tabulate import tabulate
-from io import StringIO
+from tqdm import tqdm
 
 import sys
-import base64
 import math
 import urllib.request
 import ntpath
 import mmap
 import io
 import os
-import time
-import shutil
-import cryptography
-import concurrent.futures
 import Format
-import argparse
-import re
 import json
 import hashlib
-from tqdm import tqdm
-import threading
-import queue
 
+import FileParts
 import Encoder
-
-from FileParts import UDSFile, Chunk
 from API import *
 
 DOWNLOADS_FOLDER = "downloads"
@@ -55,7 +39,7 @@ class UDS():
     def delete_file(self, id, name=None, mode_=None):
         """Deletes a given file
 
-        Use the Google Drive API to delete a file given its ID. 
+        Use the Google Drive API to delete a file given its ID.
 
         Args:
             id (str): ID of the file
@@ -65,10 +49,12 @@ class UDS():
         try:
             self.api.delete_file(id)
             if name is not None:
-                print("Deleted %s" % name)  # If Alpha commands are used, this displays the name
+                # If Alpha commands are used, this displays the name
+                print("Deleted %s" % name)
             else:
-                print("Deleted %s" % id)  # If UDS commands are used, this displays the ID
-        except:
+                # If UDS commands are used, this displays the ID
+                print("Deleted %s" % id)
+        except IOError:
             if mode_ != "quiet":
                 print("%s File was not a UDS file" % GoogleAPI.ERROR_OUTPUT)
             else:
@@ -91,7 +77,7 @@ class UDS():
         if not items:
             print('No parts found.')
             return
-            
+
         # Fix part as int
         for item in items:
             item['properties']['part'] = int(item['properties']['part'])
@@ -101,11 +87,11 @@ class UDS():
 
         f = open("%s/%s" % (get_downloads_folder(), folder['name']), "wb")
         progress_bar_chunks = tqdm(total=len(items),
-                            unit='chunks', dynamic_ncols=True,position=0)
-        progress_bar_speed = tqdm(total=len(items)* CHUNK_READ_LENGTH_BYTES,unit_scale=1,
-                            unit='B', dynamic_ncols=True,position=1)   
+                                   unit='chunks', dynamic_ncols=True, position=0)
+        progress_bar_speed = tqdm(total=len(items) * CHUNK_READ_LENGTH_BYTES, unit_scale=1,
+                                  unit='B', dynamic_ncols=True, position=1)
 
-        for i, item in enumerate(items):
+        for _, item in enumerate(items):
             encoded_part = self.download_part(item['id'])
 
             # Decode
@@ -122,10 +108,9 @@ class UDS():
 
         original_hash = folder.get("properties").get("sha256")
         if (file_hash != original_hash and original_hash is not None):
-            print("Failed to verify hash\nDownloaded file had hash %s compared to original %s", (file_hash[:9], original_hash[:9]))
+            print("Failed to verify hash\nDownloaded file had hash %s compared to original %s",
+                  (file_hash[:9], original_hash[:9]))
             os.remove(f.name)
-
-        progress_bar("Downloaded %s" % folder['name'], 1, 1)
 
     def download_part(self, part_id):
         request = self.api.export_media(part_id)
@@ -174,35 +159,28 @@ class UDS():
 
         root = self.api.get_base_folder()['id']
 
-        media = UDSFile(ntpath.basename(path), None, MimeTypes().guess_type(urllib.request.pathname2url(path))[0],
+        media = FileParts.UDSFile(ntpath.basename(path), None, MimeTypes().guess_type(urllib.request.pathname2url(path))[0],
                         Format.format(size), Format.format(encoded_size), parents=[root], size_numeric=size, sha256=file_hash)
 
         parent = self.api.create_media_folder(media)
 
         # Should be the same
-        no_chunks = math.ceil(size / CHUNK_READ_LENGTH_BYTES)
         no_docs = math.ceil(encoded_size / MAX_DOC_LENGTH)
-
-        
 
         # Append all chunks to chunk list
         chunk_list = list()
         for i in range(no_docs):
             chunk_list.append(
-                Chunk(path, i, size, media=media, parent=parent['id'])
+                FileParts.Chunk(path, i, size, media=media, parent=parent['id'])
             )
 
         total = 0
         total_chunks = len(chunk_list)
-        self.progress_bar_chunks = tqdm(total=total_chunks,
-                            unit='chunks', dynamic_ncols=True,position=0)
-        self.progress_bar_speed = tqdm(total=total_chunks* CHUNK_READ_LENGTH_BYTES,unit_scale=1,
-                            unit='B', dynamic_ncols=True,position=1)                    
-        
-        print(self.progress_bar_speed)
-        chunk_queue = queue.Queue()
-        num_workers = 4
-        threads = list()
+        progress_bar_chunks = tqdm(total=total_chunks,
+                                   unit='chunks', dynamic_ncols=True, position=0)
+        progress_bar_speed = tqdm(total=total_chunks * CHUNK_READ_LENGTH_BYTES, unit_scale=1,
+                                  unit='B', dynamic_ncols=True, position=1)
+
         for chunk in chunk_list:
             chunk_queue.put(chunk)
         
@@ -229,13 +207,10 @@ class UDS():
                 progress_bar("Uploading %s at %sMB/s" %
                              (media.name, current_speed), total, size)"""
 
-        
-
-        print("\n")
         # Print new file output
         table = [[media.name, media.size, media.encoded_size, parent['id']]]
-        print(tabulate(table, headers=[
-                  'Name', 'Size', 'Encoded', 'ID',]))
+        print("\n" + tabulate(table, headers=[
+            'Name', 'Size', 'Encoded', 'ID', ]))
 
     def convert_file(self, file_id):
         # Get file metadata
@@ -248,7 +223,7 @@ class UDS():
         downloader = MediaIoBaseDownload(fh, request)
         done = False
         while done is False:
-            status, done = downloader.next_chunk()
+            _, done = downloader.next_chunk() 
 
         print("Downloaded %s" % metadata['name'])
         do_upload(path, service)
@@ -256,7 +231,8 @@ class UDS():
         # An alternative method would be to use partial download headers
         # and convert and upload the parts individually. Perhaps a
         # future release will implement this.
-    def update(self, mode=0, opts=None):  # Mode sets the mode of updating 0 > Verbose, 1 > Notification, 2 > silent
+    # Mode sets the mode of updating 0 > Verbose, 1 > Notification, 2 > silent
+    def update(self, mode=0, opts=None):
         items = self.api.list_files(opts)
         if not items:
             print('No UDS files found.')
@@ -275,7 +251,8 @@ class UDS():
                     json.dump(user_data, data4, indent=3)
                 table.append(record)
                 with open("User.txt", 'w') as user:
-                    user.write(tabulate(table, headers=['Name', 'Encoded', 'Size', 'ID']))
+                    user.write(tabulate(table, headers=[
+                               'Name', 'Encoded', 'Size', 'ID']))
             if mode == 0:  # Verbose
                 print(tabulate(table, headers=[
                       'Name', 'Encoded', 'Size', 'ID']))
@@ -308,9 +285,10 @@ class UDS():
                 table.append(record)
 
             print(tabulate(table, headers=[
-                  'Name', 'Size', 'Encoded', 'ID',]))
+                  'Name', 'Size', 'Encoded', 'ID', ]))
 
-    def erase(self, name, default=1, mode_=None, fallback=None):  # Alpha command to erase file via name
+    # Alpha command to erase file via name
+    def erase(self, name, default=1, mode_=None, fallback=None):
         if fallback is not None:
             self.delete_file(fallback, name=name, mode_=mode_)
         else:
@@ -354,10 +332,13 @@ class UDS():
                 print("", end='')
         for i in range(check):
             self.grab(fallback=id_space[i], name=name_space[i], default=2)
-        for names in range(len(name_space)):  # Downloads the bulk using data and names
-            self.grab(name_space[names], default=2)  # Update data, not necessary
+        # Downloads the bulk using data and names
+        for names in range(len(name_space)):
+            # Update data, not necessary
+            self.grab(name_space[names], default=2)
 
-    def bunch(self, file_part, path='.'):  # Alpha command to bulk upload files based on file name part
+    # Alpha command to bulk upload files based on file name part
+    def bunch(self, file_part, path='.'):
         files = os.listdir(path)  # Make list of all files in directory
         files_upload = []
         for name in files:  # Cycles through all files
@@ -410,7 +391,6 @@ class UDS():
                 sha.update(data)
 
         return sha.hexdigest()
-    
 
     def actions(self, action, args):
         switcher = {
@@ -431,20 +411,6 @@ def get_downloads_folder():
 
 def characters_to_bytes(chars):
     return round((3/4) * chars)
-
-
-def progress_bar(title, value, endvalue, bar_length=30):
-    percent = float(value) / endvalue
-    arrow = '█' * int(round(percent * bar_length))
-    spaces = ' ' * (bar_length - len(arrow))
-
-    if value > endvalue:
-        value = endvalue
-
-    sys.stdout.write(
-        "\r"+title+": [{0}] {1}%            "
-            .format(arrow + spaces, int(round(percent * 100))))
-    sys.stdout.flush()
 
 
 def write_status(status):
